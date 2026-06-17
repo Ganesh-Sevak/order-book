@@ -38,24 +38,56 @@ std::uint64_t percentile(std::vector<std::uint64_t>& values, double p) {
     return values[index];
 }
 
+std::uint64_t calibrate_clock_overhead() {
+    std::vector<std::uint64_t> samples;
+    samples.reserve(100'000);
+    for (int i = 0; i < 100'000; ++i) {
+        const auto before = Clock::now();
+        const auto after = Clock::now();
+        samples.push_back(static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()));
+    }
+    return percentile(samples, 0.50);
+}
+
+std::vector<std::uint64_t> corrected_latencies(const std::vector<std::uint64_t>& raw, std::uint64_t clock_overhead_ns) {
+    std::vector<std::uint64_t> corrected;
+    corrected.reserve(raw.size());
+    for (const auto value : raw) {
+        corrected.push_back(value > clock_overhead_ns ? value - clock_overhead_ns : 0);
+    }
+    return corrected;
+}
+
 void print_result(const char* name,
                   std::size_t events,
                   std::chrono::nanoseconds elapsed,
-                  std::vector<std::uint64_t> latencies) {
-    auto p50_values = latencies;
-    auto p99_values = latencies;
-    auto p999_values = latencies;
+                  const std::vector<std::uint64_t>& latencies,
+                  std::uint64_t clock_overhead_ns) {
+    auto raw_p50_values = latencies;
+    auto raw_p99_values = latencies;
+    auto raw_p999_values = latencies;
+    auto corrected = corrected_latencies(latencies, clock_overhead_ns);
+    auto corrected_p50_values = corrected;
+    auto corrected_p99_values = corrected;
+    auto corrected_p999_values = corrected;
     const double seconds = static_cast<double>(elapsed.count()) / 1'000'000'000.0;
     const double throughput = seconds == 0.0 ? 0.0 : static_cast<double>(events) / seconds;
+    const auto batch_per_op = events == 0 ? 0 : static_cast<std::uint64_t>(elapsed.count() / events);
     std::cout << "{\"scenario\":\"" << name << "\",\"events\":" << events
               << ",\"elapsed_ns\":" << elapsed.count()
+              << ",\"batch_per_op_ns\":" << batch_per_op
               << ",\"throughput_per_sec\":" << static_cast<std::uint64_t>(throughput)
-              << ",\"p50_ns\":" << percentile(p50_values, 0.50)
-              << ",\"p99_ns\":" << percentile(p99_values, 0.99)
-              << ",\"p999_ns\":" << percentile(p999_values, 0.999) << "}\n";
+              << ",\"clock_overhead_ns\":" << clock_overhead_ns
+              << ",\"raw_p50_ns\":" << percentile(raw_p50_values, 0.50)
+              << ",\"raw_p99_ns\":" << percentile(raw_p99_values, 0.99)
+              << ",\"raw_p999_ns\":" << percentile(raw_p999_values, 0.999)
+              << ",\"corrected_p50_ns\":" << percentile(corrected_p50_values, 0.50)
+              << ",\"corrected_p99_ns\":" << percentile(corrected_p99_values, 0.99)
+              << ",\"corrected_p999_ns\":" << percentile(corrected_p999_values, 0.999) << "}\n";
 }
 
-void bench_submit(const char* name, const std::vector<NewOrder>& orders) {
+void bench_submit(const char* name, const std::vector<NewOrder>& orders, std::uint64_t clock_overhead_ns) {
     OrderBook book({.max_orders = orders.size() + 1024, .max_price_levels = 4096});
     std::vector<std::uint64_t> latencies;
     latencies.reserve(orders.size());
@@ -68,10 +100,10 @@ void bench_submit(const char* name, const std::vector<NewOrder>& orders) {
             std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()));
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
-    print_result(name, orders.size(), elapsed, std::move(latencies));
+    print_result(name, orders.size(), elapsed, latencies, clock_overhead_ns);
 }
 
-void bench_mixed(std::size_t count) {
+void bench_mixed(std::size_t count, std::uint64_t clock_overhead_ns) {
     OrderBook book({.max_orders = count + 1024, .max_price_levels = 4096});
     std::vector<OrderId> live;
     live.reserve(count);
@@ -116,10 +148,10 @@ void bench_mixed(std::size_t count) {
             std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()));
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
-    print_result("mixed_add_cancel_replace", count, elapsed, std::move(latencies));
+    print_result("mixed_add_cancel_replace", count, elapsed, latencies, clock_overhead_ns);
 }
 
-void bench_snapshot(std::size_t count, std::uint64_t seed) {
+void bench_snapshot(std::size_t count, std::uint64_t seed, std::uint64_t clock_overhead_ns) {
     auto orders = make_synthetic_orders(count, seed);
     OrderBook book({.max_orders = count + 1024, .max_price_levels = 4096});
     for (const auto& order : orders) {
@@ -139,10 +171,10 @@ void bench_snapshot(std::size_t count, std::uint64_t seed) {
         }
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
-    print_result("snapshot_top10", 10'000, elapsed, std::move(latencies));
+    print_result("snapshot_top10", 10'000, elapsed, latencies, clock_overhead_ns);
 }
 
-void bench_spsc(std::size_t count) {
+void bench_spsc(std::size_t count, std::uint64_t clock_overhead_ns) {
     SpscRing<std::uint64_t> ring(65536);
     std::vector<std::uint64_t> received;
     received.reserve(count);
@@ -168,13 +200,14 @@ void bench_spsc(std::size_t count) {
     }
     consumer.join();
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
-    print_result("spsc_ring_throughput", count, elapsed, std::move(latencies));
+    print_result("spsc_ring_throughput", count, elapsed, latencies, clock_overhead_ns);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
+    const auto clock_overhead_ns = calibrate_clock_overhead();
     std::cout << "{\"compiler\":\""
 #if defined(__clang__)
               << "clang-" << __clang_major__ << '.' << __clang_minor__
@@ -184,7 +217,8 @@ int main(int argc, char** argv) {
               << "unknown"
 #endif
               << "\",\"cpp\":\"" << __cplusplus << "\",\"orders\":" << args.orders
-              << ",\"seed\":" << args.seed << "}\n";
+              << ",\"seed\":" << args.seed
+              << ",\"clock_overhead_ns\":" << clock_overhead_ns << "}\n";
 
     auto add_only = make_synthetic_orders(args.orders, args.seed);
     for (std::size_t i = 0; i < add_only.size(); ++i) {
@@ -194,9 +228,9 @@ int main(int argc, char** argv) {
         add_only[i].side = Side::Buy;
         add_only[i].price = 9'000 - static_cast<Price>(i % 100);
     }
-    bench_submit("add_only", add_only);
+    bench_submit("add_only", add_only, clock_overhead_ns);
 
-    bench_mixed(args.orders);
+    bench_mixed(args.orders, clock_overhead_ns);
 
     auto crossing = make_synthetic_orders(args.orders, args.seed + 1);
     for (std::size_t i = 0; i < crossing.size(); ++i) {
@@ -206,7 +240,7 @@ int main(int argc, char** argv) {
         crossing[i].side = (i % 2 == 0) ? Side::Sell : Side::Buy;
         crossing[i].price = (i % 2 == 0) ? 10'000 : 10'001;
     }
-    bench_submit("aggressive_crossing", crossing);
-    bench_snapshot(std::min<std::size_t>(args.orders, 200'000), args.seed);
-    bench_spsc(args.orders);
+    bench_submit("aggressive_crossing", crossing, clock_overhead_ns);
+    bench_snapshot(std::min<std::size_t>(args.orders, 200'000), args.seed, clock_overhead_ns);
+    bench_spsc(args.orders, clock_overhead_ns);
 }
