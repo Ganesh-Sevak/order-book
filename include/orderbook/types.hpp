@@ -53,7 +53,8 @@ enum class ParseStatus : std::uint8_t {
     MissingField,
     InvalidEnum,
     InvalidNumber,
-    Overflow
+    Overflow,
+    UnsupportedEscape
 };
 
 struct NewOrder {

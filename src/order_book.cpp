@@ -126,6 +126,8 @@ const char* to_string(ParseStatus status) noexcept {
             return "invalid_number";
         case ParseStatus::Overflow:
             return "overflow";
+        case ParseStatus::UnsupportedEscape:
+            return "unsupported_escape";
     }
     return "unknown";
 }

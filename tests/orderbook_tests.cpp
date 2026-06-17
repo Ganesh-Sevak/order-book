@@ -126,6 +126,12 @@ TEST_CASE("parser handles valid events and rejects bad fields") {
 
     auto bad = parse_event_jsonl(R"({"op":"add","id":"not-a-number","side":"buy","price":100,"quantity":5})");
     CHECK(bad.status == ParseStatus::InvalidNumber);
+
+    auto escaped = parse_event_jsonl("{\"op\":\"add\",\"id\":1,\"side\":\"buy\",\"price\":100,\"quantity\":5,\"type\":\"lim\\nit\",\"tif\":\"gtc\"}");
+    CHECK(escaped.status == ParseStatus::InvalidEnum);
+
+    auto unsupported = parse_event_jsonl(R"({"op":"add","id":1,"side":"buy","price":100,"quantity":5,"type":"\u006cimit","tif":"gtc"})");
+    CHECK(unsupported.status == ParseStatus::UnsupportedEscape);
 }
 
 TEST_CASE("spsc ring preserves fifo order") {

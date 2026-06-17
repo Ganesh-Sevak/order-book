@@ -1,9 +1,10 @@
 #include "orderbook/jsonl.hpp"
 
 #include <charconv>
+#include <array>
+#include <algorithm>
 #include <cctype>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -33,10 +34,14 @@ bool consume(std::string_view& input, char expected) {
     return true;
 }
 
-bool parse_string(std::string_view& input, std::string& out) {
+bool is_hex(char c) noexcept {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+ParseStatus parse_string(std::string_view& input, std::string& out) {
     input = trim(input);
     if (input.empty() || input.front() != '"') {
-        return false;
+        return ParseStatus::Malformed;
     }
     input.remove_prefix(1);
     out.clear();
@@ -44,29 +49,55 @@ bool parse_string(std::string_view& input, std::string& out) {
         const char c = input.front();
         input.remove_prefix(1);
         if (c == '"') {
-            return true;
+            return ParseStatus::Ok;
         }
         if (c == '\\') {
             if (input.empty()) {
-                return false;
+                return ParseStatus::Malformed;
             }
             const char escaped = input.front();
             input.remove_prefix(1);
-            if (escaped != '"' && escaped != '\\' && escaped != '/') {
-                return false;
+            switch (escaped) {
+                case '"':
+                case '\\':
+                case '/':
+                    out.push_back(escaped);
+                    break;
+                case 'n':
+                    out.push_back('\n');
+                    break;
+                case 'r':
+                    out.push_back('\r');
+                    break;
+                case 't':
+                    out.push_back('\t');
+                    break;
+                case 'b':
+                    out.push_back('\b');
+                    break;
+                case 'f':
+                    out.push_back('\f');
+                    break;
+                case 'u':
+                    if (input.size() < 4 || !is_hex(input[0]) || !is_hex(input[1]) || !is_hex(input[2]) ||
+                        !is_hex(input[3])) {
+                        return ParseStatus::Malformed;
+                    }
+                    return ParseStatus::UnsupportedEscape;
+                default:
+                    return ParseStatus::UnsupportedEscape;
             }
-            out.push_back(escaped);
         } else {
             out.push_back(c);
         }
     }
-    return false;
+    return ParseStatus::Malformed;
 }
 
-bool parse_value(std::string_view& input, std::string& out) {
+ParseStatus parse_value(std::string_view& input, std::string& out) {
     input = trim(input);
     if (input.empty()) {
-        return false;
+        return ParseStatus::Malformed;
     }
     if (input.front() == '"') {
         return parse_string(input, out);
@@ -75,11 +106,11 @@ bool parse_value(std::string_view& input, std::string& out) {
     if (end == std::string_view::npos) {
         out = std::string(trim(input));
         input = {};
-        return true;
+        return ParseStatus::Ok;
     }
     out = std::string(trim(input.substr(0, end)));
     input.remove_prefix(end);
-    return !out.empty();
+    return out.empty() ? ParseStatus::Malformed : ParseStatus::Ok;
 }
 
 ParseStatus parse_object(std::string_view line, Fields& fields) {
@@ -98,8 +129,16 @@ ParseStatus parse_object(std::string_view line, Fields& fields) {
     while (true) {
         std::string key;
         std::string value;
-        if (!parse_string(line, key) || !consume(line, ':') || !parse_value(line, value)) {
+        const auto key_status = parse_string(line, key);
+        if (key_status != ParseStatus::Ok) {
+            return key_status;
+        }
+        if (!consume(line, ':')) {
             return ParseStatus::Malformed;
+        }
+        const auto value_status = parse_value(line, value);
+        if (value_status != ParseStatus::Ok) {
+            return value_status;
         }
         fields.emplace(std::move(key), std::move(value));
         line = trim(line);
@@ -216,13 +255,10 @@ ParseStatus parse_tif(const Fields& fields, TimeInForce& out) {
     return ParseStatus::InvalidEnum;
 }
 
-bool has_only_fields(const Fields& fields, std::initializer_list<std::string_view> allowed) {
+template <std::size_t N>
+bool has_only_fields(const Fields& fields, const std::array<std::string_view, N>& allowed) {
     for (const auto& [key, _] : fields) {
-        bool found = false;
-        for (const auto expected : allowed) {
-            found = found || key == expected;
-        }
-        if (!found) {
+        if (!std::binary_search(allowed.begin(), allowed.end(), std::string_view(key))) {
             return false;
         }
     }
@@ -243,7 +279,8 @@ ParseResult parse_event_jsonl(std::string_view line) {
     }
 
     if (op_it->second == "add") {
-        if (!has_only_fields(fields, {"op", "id", "side", "price", "quantity", "type", "tif"})) {
+        static constexpr std::array<std::string_view, 7> allowed{"id", "op", "price", "quantity", "side", "tif", "type"};
+        if (!has_only_fields(fields, allowed)) {
             return {.status = ParseStatus::UnknownField, .message = "unknown add field"};
         }
         NewOrder order;
@@ -257,7 +294,8 @@ ParseResult parse_event_jsonl(std::string_view line) {
     }
 
     if (op_it->second == "cancel") {
-        if (!has_only_fields(fields, {"op", "id"})) {
+        static constexpr std::array<std::string_view, 2> allowed{"id", "op"};
+        if (!has_only_fields(fields, allowed)) {
             return {.status = ParseStatus::UnknownField, .message = "unknown cancel field"};
         }
         CancelOrder cancel;
@@ -266,7 +304,8 @@ ParseResult parse_event_jsonl(std::string_view line) {
     }
 
     if (op_it->second == "replace") {
-        if (!has_only_fields(fields, {"op", "old_id", "new_id", "price", "quantity", "tif"})) {
+        static constexpr std::array<std::string_view, 6> allowed{"new_id", "old_id", "op", "price", "quantity", "tif"};
+        if (!has_only_fields(fields, allowed)) {
             return {.status = ParseStatus::UnknownField, .message = "unknown replace field"};
         }
         ReplaceOrder replace;
@@ -282,46 +321,74 @@ ParseResult parse_event_jsonl(std::string_view line) {
 }
 
 std::string to_jsonl(const Trade& trade) {
-    std::ostringstream out;
-    out << "{\"type\":\"trade\",\"sequence\":" << trade.sequence
-        << ",\"maker_id\":" << trade.maker_id
-        << ",\"taker_id\":" << trade.taker_id
-        << ",\"price\":" << trade.price
-        << ",\"quantity\":" << trade.quantity << "}";
-    return out.str();
+    std::string out;
+    out.reserve(128);
+    out += "{\"type\":\"trade\",\"sequence\":";
+    out += std::to_string(trade.sequence);
+    out += ",\"maker_id\":";
+    out += std::to_string(trade.maker_id);
+    out += ",\"taker_id\":";
+    out += std::to_string(trade.taker_id);
+    out += ",\"price\":";
+    out += std::to_string(trade.price);
+    out += ",\"quantity\":";
+    out += std::to_string(trade.quantity);
+    out += "}";
+    return out;
 }
 
 std::string to_jsonl(const BookSnapshot& snapshot) {
-    std::ostringstream out;
-    out << "{\"type\":\"snapshot\",\"sequence\":" << snapshot.sequence << ",\"bids\":[";
+    std::string out;
+    out.reserve(128 + (snapshot.bids.size() + snapshot.asks.size()) * 64);
+    out += "{\"type\":\"snapshot\",\"sequence\":";
+    out += std::to_string(snapshot.sequence);
+    out += ",\"bids\":[";
     for (std::size_t i = 0; i < snapshot.bids.size(); ++i) {
-        if (i != 0) out << ',';
+        if (i != 0) out += ',';
         const auto& level = snapshot.bids[i];
-        out << "{\"price\":" << level.price << ",\"quantity\":" << level.quantity
-            << ",\"orders\":" << level.order_count << "}";
+        out += "{\"price\":";
+        out += std::to_string(level.price);
+        out += ",\"quantity\":";
+        out += std::to_string(level.quantity);
+        out += ",\"orders\":";
+        out += std::to_string(level.order_count);
+        out += "}";
     }
-    out << "],\"asks\":[";
+    out += "],\"asks\":[";
     for (std::size_t i = 0; i < snapshot.asks.size(); ++i) {
-        if (i != 0) out << ',';
+        if (i != 0) out += ',';
         const auto& level = snapshot.asks[i];
-        out << "{\"price\":" << level.price << ",\"quantity\":" << level.quantity
-            << ",\"orders\":" << level.order_count << "}";
+        out += "{\"price\":";
+        out += std::to_string(level.price);
+        out += ",\"quantity\":";
+        out += std::to_string(level.quantity);
+        out += ",\"orders\":";
+        out += std::to_string(level.order_count);
+        out += "}";
     }
-    out << "]}";
-    return out.str();
+    out += "]}";
+    return out;
 }
 
 std::string to_jsonl(const Metrics& metrics) {
-    std::ostringstream out;
-    out << "{\"type\":\"metrics\""
-        << ",\"submitted\":" << metrics.submitted
-        << ",\"accepted\":" << metrics.accepted
-        << ",\"rejected\":" << metrics.rejected
-        << ",\"canceled\":" << metrics.canceled
-        << ",\"replaced\":" << metrics.replaced
-        << ",\"trades\":" << metrics.trades
-        << ",\"capacity_rejections\":" << metrics.capacity_rejections << "}";
-    return out.str();
+    std::string out;
+    out.reserve(192);
+    out += "{\"type\":\"metrics\",\"submitted\":";
+    out += std::to_string(metrics.submitted);
+    out += ",\"accepted\":";
+    out += std::to_string(metrics.accepted);
+    out += ",\"rejected\":";
+    out += std::to_string(metrics.rejected);
+    out += ",\"canceled\":";
+    out += std::to_string(metrics.canceled);
+    out += ",\"replaced\":";
+    out += std::to_string(metrics.replaced);
+    out += ",\"trades\":";
+    out += std::to_string(metrics.trades);
+    out += ",\"capacity_rejections\":";
+    out += std::to_string(metrics.capacity_rejections);
+    out += "}";
+    return out;
 }
 
 }  // namespace orderbook
