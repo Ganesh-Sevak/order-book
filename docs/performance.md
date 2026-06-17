@@ -12,11 +12,11 @@ Measured locally on macOS 26.5.1, Darwin arm64, AppleClang 21.0.0, Release build
 
 | Scenario | Throughput/sec | p50 ns | p99 ns | p99.9 ns |
 | --- | ---: | ---: | ---: | ---: |
-| add_only | 15,166,833 | 42 | 84 | 1,500 |
-| mixed_add_cancel_replace | 13,426,197 | 42 | 125 | 750 |
-| aggressive_crossing | 29,519,937 | 0 | 42 | 42 |
-| snapshot_top10 | 11,350,737 | 42 | 84 | 125 |
-| spsc_ring_throughput | 15,725,228 | 42 | 84 | 208 |
+| add_only | 22,042,210 | 41 | 83 | 833 |
+| mixed_add_cancel_replace | 17,159,649 | 42 | 84 | 833 |
+| aggressive_crossing | 36,335,558 | 0 | 42 | 42 |
+| snapshot_top10 | 10,870,061 | 42 | 84 | 125 |
+| spsc_ring_throughput | 9,945,877 | 83 | 208 | 250 |
 
 The benchmark prints JSON lines so results can be archived by CI or pasted into this file after each optimization.
 
