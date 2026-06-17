@@ -38,5 +38,5 @@ int main() {
     for (int i = 0; i < 20'000; ++i) {
         (void)orderbook::parse_event_jsonl(random_line(rng));
     }
-    std::cout << "parser_fuzz: ok\n";
+    std::cout << "parser_corpus: ok\n";
 }
