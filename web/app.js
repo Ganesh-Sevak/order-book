@@ -1,6 +1,7 @@
 const state = {
   snapshots: [],
   trades: [],
+  source: null,
 };
 
 function parseJsonl(text) {
@@ -74,6 +75,27 @@ function render() {
   renderTrades();
 }
 
+function connectSse() {
+  if (state.source) {
+    state.source.close();
+  }
+  const url = document.getElementById("sseUrl").value;
+  state.snapshots = [];
+  state.trades = [];
+  state.source = new EventSource(url);
+  state.source.onmessage = (event) => {
+    const row = JSON.parse(event.data);
+    if (row.type === "snapshot" || row.type === "metrics") {
+      state.snapshots.push(row);
+    }
+    if (row.type === "trade") {
+      state.trades.push(row);
+    }
+    render();
+  };
+}
+
 document.getElementById("snapshots").addEventListener("change", (event) => loadFile(event.target, "snapshots"));
 document.getElementById("trades").addEventListener("change", (event) => loadFile(event.target, "trades"));
+document.getElementById("connect").addEventListener("click", connectSse);
 render();

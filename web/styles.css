@@ -51,6 +51,19 @@ input {
   max-width: 240px;
 }
 
+.connect {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid #3a474d;
+  border-radius: 6px;
+  background: #1d272c;
+  color: #e8edf0;
+  padding: 6px 10px;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
