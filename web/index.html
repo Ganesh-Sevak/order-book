@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Order Book Visualizer</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar">
+        <div>
+          <h1>Order Book Replay</h1>
+          <p>Load JSONL artifacts emitted by <code>orderbook_demo</code>.</p>
+        </div>
+        <label>
+          Snapshots
+          <input id="snapshots" type="file" accept=".jsonl,.json">
+        </label>
+        <label>
+          Trades
+          <input id="trades" type="file" accept=".jsonl,.json">
+        </label>
+      </section>
+
+      <section class="metrics">
+        <div><span>Sequence</span><strong id="sequence">0</strong></div>
+        <div><span>Spread</span><strong id="spread">-</strong></div>
+        <div><span>Mid</span><strong id="mid">-</strong></div>
+        <div><span>Imbalance</span><strong id="imbalance">0.000</strong></div>
+      </section>
+
+      <section class="grid">
+        <article>
+          <h2>Bids</h2>
+          <div id="bids" class="ladder"></div>
+        </article>
+        <article>
+          <h2>Asks</h2>
+          <div id="asks" class="ladder"></div>
+        </article>
+        <article class="wide">
+          <h2>Recent Trades</h2>
+          <div id="tradeList" class="trades"></div>
+        </article>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

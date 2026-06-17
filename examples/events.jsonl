@@ -1,0 +1,8 @@
+{"op":"add","id":1,"side":"buy","price":10000,"quantity":100,"type":"limit","tif":"gtc"}
+{"op":"add","id":2,"side":"buy","price":9999,"quantity":150,"type":"limit","tif":"gtc"}
+{"op":"add","id":3,"side":"sell","price":10005,"quantity":120,"type":"limit","tif":"gtc"}
+{"op":"add","id":4,"side":"sell","price":10006,"quantity":80,"type":"limit","tif":"gtc"}
+{"op":"add","id":5,"side":"buy","price":10005,"quantity":50,"type":"limit","tif":"ioc"}
+{"op":"replace","old_id":2,"new_id":6,"price":10001,"quantity":75,"tif":"gtc"}
+{"op":"cancel","id":4}
+{"op":"add","id":7,"side":"sell","price":10001,"quantity":30,"type":"limit","tif":"fok"}

@@ -71,6 +71,54 @@ void bench_submit(const char* name, const std::vector<NewOrder>& orders) {
     print_result(name, orders.size(), elapsed, std::move(latencies));
 }
 
+void bench_mixed(std::size_t count) {
+    OrderBook book({.max_orders = count + 1024, .max_price_levels = 4096});
+    std::vector<OrderId> live;
+    live.reserve(count);
+    std::vector<std::uint64_t> latencies;
+    latencies.reserve(count);
+    OrderId next_id = 1;
+
+    const auto start = Clock::now();
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto before = Clock::now();
+        if (live.empty() || i % 10 < 6) {
+            NewOrder order{
+                .id = next_id++,
+                .side = Side::Buy,
+                .price = 9'000 - static_cast<Price>(i % 100),
+                .quantity = static_cast<Quantity>(1 + (i % 250)),
+            };
+            auto result = book.submit(order);
+            if (result.status == SubmitStatus::Accepted && result.resting_quantity > 0) {
+                live.push_back(order.id);
+            }
+        } else if (i % 10 < 8) {
+            const OrderId id = live.back();
+            live.pop_back();
+            (void)book.cancel(id);
+        } else {
+            const OrderId old_id = live.back();
+            live.pop_back();
+            const OrderId new_id = next_id++;
+            auto result = book.replace({
+                .old_id = old_id,
+                .new_id = new_id,
+                .new_price = 8'900 - static_cast<Price>(i % 100),
+                .new_quantity = static_cast<Quantity>(1 + (i % 300)),
+            });
+            if (result.status == ReplaceStatus::Replaced) {
+                live.push_back(new_id);
+            }
+        }
+        const auto after = Clock::now();
+        latencies.push_back(static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()));
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
+    print_result("mixed_add_cancel_replace", count, elapsed, std::move(latencies));
+}
+
 void bench_snapshot(std::size_t count, std::uint64_t seed) {
     auto orders = make_synthetic_orders(count, seed);
     OrderBook book({.max_orders = count + 1024, .max_price_levels = 4096});
@@ -98,6 +146,8 @@ void bench_spsc(std::size_t count) {
     SpscRing<std::uint64_t> ring(65536);
     std::vector<std::uint64_t> received;
     received.reserve(count);
+    std::vector<std::uint64_t> latencies;
+    latencies.reserve(count);
     const auto start = Clock::now();
     std::thread consumer([&] {
         while (received.size() < count) {
@@ -108,14 +158,17 @@ void bench_spsc(std::size_t count) {
     });
     std::size_t pushed = 0;
     while (pushed < count) {
+        const auto before = Clock::now();
         if (ring.push(static_cast<std::uint64_t>(pushed))) {
+            const auto after = Clock::now();
+            latencies.push_back(static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()));
             ++pushed;
         }
     }
     consumer.join();
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start);
-    std::vector<std::uint64_t> placeholder(count, 0);
-    print_result("spsc_ring_throughput", count, elapsed, std::move(placeholder));
+    print_result("spsc_ring_throughput", count, elapsed, std::move(latencies));
 }
 
 }  // namespace
@@ -143,7 +196,7 @@ int main(int argc, char** argv) {
     }
     bench_submit("add_only", add_only);
 
-    bench_submit("mixed_add_cancel_replace_shape", make_synthetic_orders(args.orders, args.seed));
+    bench_mixed(args.orders);
 
     auto crossing = make_synthetic_orders(args.orders, args.seed + 1);
     for (std::size_t i = 0; i < crossing.size(); ++i) {
