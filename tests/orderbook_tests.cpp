@@ -65,6 +65,30 @@ void test_invalid_inputs() {
     require(book.submit({.id = 2, .side = Side::Buy, .price = 99, .quantity = 1}).status == SubmitStatus::RejectedCapacity, "reject capacity");
 }
 
+void test_capacity_reuse_after_cancel_and_fill() {
+    OrderBook cancel_book({.max_orders = 1});
+    require(cancel_book.submit({.id = 1, .side = Side::Buy, .price = 100, .quantity = 1}).status == SubmitStatus::Accepted, "accept one");
+    require(cancel_book.cancel(1).status == CancelStatus::Canceled, "cancel frees slot");
+    require(cancel_book.reusable_slots() == 1, "slot is reusable after cancel");
+    require(cancel_book.submit({.id = 2, .side = Side::Buy, .price = 101, .quantity = 1}).status == SubmitStatus::Accepted, "reuse canceled slot");
+
+    OrderBook fill_book({.max_orders = 1});
+    require(fill_book.submit({.id = 1, .side = Side::Sell, .price = 100, .quantity = 1}).status == SubmitStatus::Accepted, "accept resting sell");
+    auto fill = fill_book.submit({.id = 2, .side = Side::Buy, .price = 100, .quantity = 1, .tif = TimeInForce::Ioc});
+    require(fill.trades.size() == 1, "fill consumes resting order");
+    require(fill_book.reusable_slots() == 1, "slot is reusable after fill");
+    require(fill_book.submit({.id = 3, .side = Side::Sell, .price = 101, .quantity = 1}).status == SubmitStatus::Accepted, "reuse filled slot");
+}
+
+void test_no_partial_fill_when_residual_cannot_rest() {
+    OrderBook book({.max_orders = 1});
+    require(book.submit({.id = 1, .side = Side::Sell, .price = 100, .quantity = 5}).status == SubmitStatus::Accepted, "accept resting sell");
+    auto result = book.submit({.id = 2, .side = Side::Buy, .price = 100, .quantity = 10});
+    require(result.status == SubmitStatus::RejectedCapacity, "reject before creating residual that cannot rest");
+    require(result.trades.empty(), "no partial fill before residual capacity failure");
+    require(book.depth_at(Side::Sell, 100) == 5, "resting order unchanged");
+}
+
 void test_parser() {
     auto add = parse_event_jsonl(R"({"op":"add","id":1,"side":"buy","price":100,"quantity":5,"type":"limit","tif":"gtc"})");
     require(add.status == ParseStatus::Ok && std::holds_alternative<NewOrder>(add.event), "parse add");
@@ -102,6 +126,8 @@ int main() {
     test_price_priority();
     test_ioc_fok_cancel_replace();
     test_invalid_inputs();
+    test_capacity_reuse_after_cancel_and_fill();
+    test_no_partial_fill_when_residual_cannot_rest();
     test_parser();
     test_spsc();
     property_random_invariants();

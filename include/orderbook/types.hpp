@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <cstddef>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -82,6 +85,63 @@ struct Trade {
     Sequence sequence{};
 };
 
+class TradeList {
+public:
+    using Spill = std::vector<Trade>;
+
+    void push_back(const Trade& trade) {
+        if (inline_size_ < inline_.size()) {
+            inline_[inline_size_++] = trade;
+            return;
+        }
+        if (spill_.empty()) {
+            spill_.reserve(inline_.size() * 2);
+            for (std::size_t i = 0; i < inline_size_; ++i) {
+                spill_.push_back(inline_[i]);
+            }
+        }
+        spill_.push_back(trade);
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return spill_.empty() ? inline_size_ : spill_.size(); }
+    [[nodiscard]] const Trade& operator[](std::size_t index) const noexcept {
+        return spill_.empty() ? inline_[index] : spill_[index];
+    }
+
+    class const_iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = Trade;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const Trade*;
+        using reference = const Trade&;
+
+        const_iterator(const TradeList* list, std::size_t index) : list_(list), index_(index) {}
+        reference operator*() const noexcept { return (*list_)[index_]; }
+        pointer operator->() const noexcept { return &(*list_)[index_]; }
+        const_iterator& operator++() noexcept {
+            ++index_;
+            return *this;
+        }
+        bool operator==(const const_iterator& other) const noexcept {
+            return list_ == other.list_ && index_ == other.index_;
+        }
+
+    private:
+        const TradeList* list_{};
+        std::size_t index_{};
+    };
+
+    [[nodiscard]] const_iterator begin() const noexcept { return {this, 0}; }
+    [[nodiscard]] const_iterator end() const noexcept { return {this, size()}; }
+
+private:
+    std::array<Trade, 4> inline_{};
+    std::size_t inline_size_{};
+    Spill spill_;
+};
+
 struct PriceLevelSnapshot {
     Price price{};
     Quantity quantity{};
@@ -98,7 +158,7 @@ struct SubmitResult {
     SubmitStatus status{SubmitStatus::Accepted};
     Quantity accepted_quantity{};
     Quantity resting_quantity{};
-    std::vector<Trade> trades;
+    TradeList trades;
 };
 
 struct CancelResult {
@@ -109,7 +169,7 @@ struct CancelResult {
 struct ReplaceResult {
     ReplaceStatus status{ReplaceStatus::UnknownOrder};
     Quantity resting_quantity{};
-    std::vector<Trade> trades;
+    TradeList trades;
 };
 
 struct Metrics {
@@ -119,9 +179,13 @@ struct Metrics {
     std::uint64_t canceled{};
     std::uint64_t replaced{};
     std::uint64_t trades{};
+    std::uint64_t capacity_rejections{};
+};
+
+struct PipelineMetrics {
     std::uint64_t parser_failures{};
     std::uint64_t queue_drops{};
-    std::uint64_t capacity_rejections{};
+    std::uint64_t backpressure_events{};
 };
 
 const char* to_string(Side side) noexcept;

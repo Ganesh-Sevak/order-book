@@ -55,7 +55,7 @@ void print_usage() {
               << "  orderbook_demo replay --input events.jsonl [--snapshots file] [--trades file]\n";
 }
 
-void write_trades(std::ostream* out, const std::vector<Trade>& trades) {
+void write_trades(std::ostream* out, const TradeList& trades) {
     if (out == nullptr) {
         return;
     }

@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -48,6 +47,7 @@ public:
     [[nodiscard]] Sequence sequence() const noexcept { return sequence_; }
     [[nodiscard]] std::size_t live_orders() const noexcept { return order_index_.size(); }
     [[nodiscard]] std::size_t order_capacity() const noexcept { return orders_.capacity(); }
+    [[nodiscard]] std::size_t reusable_slots() const noexcept { return free_orders_.size(); }
 
 private:
     static constexpr std::uint32_t npos = UINT32_MAX;
@@ -71,27 +71,50 @@ private:
         std::uint32_t tail{npos};
     };
 
-    using LevelMap = std::map<Price, PriceLevel>;
+    class BookSide {
+    public:
+        explicit BookSide(Side side = Side::Buy) : side_(side) {}
+
+        [[nodiscard]] bool empty() const noexcept { return levels_.empty(); }
+        [[nodiscard]] std::size_t size() const noexcept { return levels_.size(); }
+        [[nodiscard]] PriceLevel* find(Price price) noexcept;
+        [[nodiscard]] const PriceLevel* find(Price price) const noexcept;
+        [[nodiscard]] PriceLevel* find_or_insert(Price price);
+        [[nodiscard]] bool contains(Price price) const noexcept { return find(price) != nullptr; }
+        void erase_if_empty(Price price);
+        [[nodiscard]] PriceLevel* best() noexcept;
+        [[nodiscard]] const PriceLevel* best() const noexcept;
+        [[nodiscard]] const std::vector<PriceLevel>& levels() const noexcept { return levels_; }
+
+    private:
+        [[nodiscard]] std::vector<PriceLevel>::iterator lower_bound(Price price) noexcept;
+        [[nodiscard]] std::vector<PriceLevel>::const_iterator lower_bound(Price price) const noexcept;
+
+        Side side_;
+        std::vector<PriceLevel> levels_;
+    };
 
     SubmitResult submit_limit(NewOrder order);
     SubmitResult submit_market(NewOrder order);
     bool can_fully_fill(const NewOrder& order) const;
-    void match(NewOrder& taker, std::vector<Trade>& trades);
+    void match(NewOrder& taker, TradeList& trades);
     bool crosses(const NewOrder& order) const noexcept;
-    void rest_order(const NewOrder& order, Quantity remaining);
+    bool rest_order(const NewOrder& order, Quantity remaining);
     void unlink_order(std::uint32_t index);
     void erase_level_if_empty(Side side, Price price);
     std::optional<std::uint32_t> allocate_order(const NewOrder& order, Quantity remaining);
+    bool has_order_slot_capacity() const noexcept;
 
-    [[nodiscard]] LevelMap& levels(Side side) noexcept;
-    [[nodiscard]] const LevelMap& levels(Side side) const noexcept;
+    [[nodiscard]] BookSide& side_book(Side side) noexcept;
+    [[nodiscard]] const BookSide& side_book(Side side) const noexcept;
     [[nodiscard]] PriceLevel* best_opposite_level(Side taker_side) noexcept;
     [[nodiscard]] const PriceLevel* find_level(Side side, Price price) const noexcept;
 
     OrderBookConfig config_;
     std::vector<OrderNode> orders_;
-    LevelMap bids_;
-    LevelMap asks_;
+    std::vector<std::uint32_t> free_orders_;
+    BookSide bids_{Side::Buy};
+    BookSide asks_{Side::Sell};
     std::unordered_map<OrderId, std::uint32_t> order_index_;
     Sequence sequence_{};
     Metrics metrics_{};

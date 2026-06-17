@@ -320,8 +320,6 @@ std::string to_jsonl(const Metrics& metrics) {
         << ",\"canceled\":" << metrics.canceled
         << ",\"replaced\":" << metrics.replaced
         << ",\"trades\":" << metrics.trades
-        << ",\"parser_failures\":" << metrics.parser_failures
-        << ",\"queue_drops\":" << metrics.queue_drops
         << ",\"capacity_rejections\":" << metrics.capacity_rejections << "}";
     return out.str();
 }
