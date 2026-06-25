@@ -1,35 +1,43 @@
 # Performance Notes
 
-Benchmarks are reproducible with:
+Build the Release benchmark and write a comparable JSONL artifact:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/orderbook_bench --orders 100000 --seed 42
+./build/orderbook_bench --orders 100000 --seed 42 --runs 5 > candidate.jsonl
 ```
 
-Measured locally on macOS 26.5.1, Darwin arm64, AppleClang 21.0.0, Release build.
+The benchmark runs one warmup suite, then reports median p50/p99/p99.9, batch latency, and throughput across the requested number of runs. It includes these matching-core scenarios:
 
-Clock overhead calibration reported `0 ns` on this run, so raw and corrected percentiles are identical.
+| Scenario | Purpose |
+| --- | --- |
+| `add_only` | Resting orders at a small set of hot levels. |
+| `mixed_add_cancel_replace` | Typical add/cancel/replace churn. |
+| `aggressive_crossing` | Short crossing/IOC execution paths. |
+| `deep_wide_level_churn` | Repeatedly creates and empties dispersed levels in a 131,072-tick band. |
+| `snapshot_top10` | Read-side top-of-book extraction. |
 
-| Scenario | Throughput/sec | Batch ns/op | Corrected p50 ns | Corrected p99 ns | Corrected p99.9 ns |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| add_only | 18,034,401 | 55 | 42 | 84 | 875 |
-| mixed_add_cancel_replace | 14,426,023 | 69 | 42 | 125 | 167 |
-| aggressive_crossing | 31,124,374 | 32 | 0 | 42 | 42 |
-| snapshot_top10 | 16,826,773 | 59 | 41 | 42 | 125 |
-| spsc_ring_throughput | 10,058,295 | 99 | 42 | 250 | 292 |
+The deep/wide scenario is the primary tail-latency check for price-level maintenance. The SPSC result remains an ingestion reference rather than a matching-core gate.
 
-The benchmark prints JSON lines so results can be archived by CI or pasted into this file after each optimization.
+## Comparison Gate
+
+Capture the baseline from the pre-change revision on the same machine and command, then compare:
+
+```bash
+python3 tools/check_bench.py baseline.jsonl candidate.jsonl
+```
+
+The gate requires at least 25% lower raw p99 for `deep_wide_level_churn` when both artifacts contain it and permits no more than a 5% raw-p99 regression in shared existing scenarios. Corrected percentiles remain diagnostic output because clock-overhead calibration can vary by a timer tick between runs. The script rejects artifacts that differ in compiler, C++ mode, event count, or seed.
+
+Sub-100 ns figures are close to local clock resolution. Use them for same-host comparisons, not portable latency guarantees. Pair each performance result with a profiler artifact or command such as `sample`, Instruments, or a flamegraph.
 
 ## Optimization Log
 
 | Change | Before | Bottleneck evidence | After |
 | --- | --- | --- | --- |
-| Initial index-based FIFO queues | N/A | Design chosen before baseline. Avoided pointer ownership and O(n) cancel scans. | Baseline above. |
-| Free-list order slot reuse | Rejected new orders after slot vector reached capacity, even when cancelled slots existed. | Review found dead `OrderNode` slots were never reused. | Cancelled/filled slots are reusable; regression tests cover both paths. |
-| Sorted-vector price levels | `std::map` price levels. | Review identified tree pointer-chasing for clustered active prices. | Contiguous level traversal and O(1) edge best bid/ask; numbers above are new baseline. |
-| Clock-overhead calibration | Percentiles included measurement overhead without reporting it. | Review identified two `Clock::now()` calls around every operation. | Output includes clock overhead, raw percentiles, corrected percentiles, and batch ns/op. |
-| Cache-line padded SPSC counters | N/A | Prevents producer/consumer counter false sharing by construction. | Baseline SPSC above. |
-
-Future optimization entries should include a profiler artifact or command, such as `perf`, Instruments, or a flamegraph. Do not update README performance claims without recording the before number, bottleneck evidence, change, and after number here.
+| Initial index-based FIFO queues | N/A | Avoided pointer ownership and O(n) cancel scans. | Baseline architecture. |
+| Free-list order slot reuse | Dead order slots were not reused. | Review found capacity exhausted after normal cancels/fills. | Cancelled/filled slots are reusable. |
+| Dense price ladder + occupancy bitmap | Sorted-vector price levels. | New-level inserts and empty-level erases shifted O(M) entries. | Requires same-host baseline/candidate artifact comparison. |
+| Fixed flat order index | Node-based `std::unordered_map`. | Rehashes and per-entry allocations create avoidable tail work. | Preallocated open-addressed table with backward-shift deletion. |
+| TradeSink fast path | Result-owned `TradeList` for all callers. | Passive orders constructed result storage even when callers consume executions synchronously. | Opt-in compact summary plus synchronous callback. |

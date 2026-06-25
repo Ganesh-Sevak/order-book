@@ -8,37 +8,35 @@ Prices are integer ticks. Floating-point prices were rejected because binary rou
 
 ## Data Structures
 
-The book stores each side in a sorted `std::vector<PriceLevel>`. A price level stores aggregate quantity, order count, head index, and tail index. Orders live in a preallocated `std::vector<OrderNode>` and are linked by integer indices rather than pointers. Cancelled and fully filled order slots are returned to a free-list and reused.
+Every book is constructed with an inclusive, fixed positive tick band. Each side stores a dense `PriceLevel` ladder indexed by `price - min_price`; a level stores aggregate quantity, order count, head index, and tail index. A hierarchical bitmap records which ladder entries are occupied. Orders live in a preallocated `std::vector<OrderNode>` and are linked by integer indices rather than pointers. Cancelled and fully filled order slots are returned to a free-list and reused.
 
 Why this shape:
 
-- Sorted vectors keep price-level traversal contiguous and make top-N snapshots cache-friendly.
-- Binary search gives O(log M) price lookup while best bid/ask remain O(1) at vector edges.
+- Direct tick indexing removes binary searches, vector insertion/erase shifts, and price-level allocation from submit/cancel/match paths.
+- The occupancy bitmap finds the best or next occupied level in O(log64 P), without walking empty ticks; `P` is the configured band size.
 - Index-based intrusive queues make cancel unlink O(1) once the order ID is found.
-- Preallocated order storage plus a free-list avoids hidden hot-path heap growth and avoids exhausting capacity after normal cancels/fills.
-- Integer indices keep hot order nodes compact and easier to reason about than owning pointers.
+- Preallocated order storage, a free-list, and a fixed open-addressed ID index avoid hidden hot-path heap growth and rehashing.
+- Compact integer-indexed nodes keep the matching working set small.
 
 Rejected alternatives:
 
-- A flat price array would make price-level access O(1), but it requires a bounded price band and wastes memory for sparse books.
-- `std::map` was initially simple, but every level traversal pointer-chased through tree nodes.
-- A pointer-heavy custom tree would be more complex without improving the demo's measured bottlenecks.
+- An adaptive price range was rejected because growth would allocate and create latency spikes; prices outside the configured band are rejected.
+- A sparse tree/map was rejected because it reintroduces pointer chasing and does not give predictable level-update latency.
 - A mutex-protected queue was rejected for ingestion because SPSC has a simple acquire/release protocol and avoids lock convoy behavior.
 
 ## Complexity
 
-`N` is live orders and `M` is active price levels.
+`N` is live orders and `P` is configured ticks.
 
 | Operation | Complexity |
 | --- | ---: |
-| Add at existing price | O(log M) lookup + O(1) append |
-| Add at new price | O(log M) lookup + O(M) insert |
+| Add at any price in the configured band | Expected O(1) ID check + O(1) append |
 | Cancel | O(1) |
 | Replace | O(1) cancel + submit cost |
 | Match | O(1) per maker order consumed |
-| Best bid/ask | O(1) edge access |
-| Depth at exact price | O(log M) |
-| Top-N snapshot | O(N levels requested) |
+| Best bid/ask | O(log64 P) |
+| Depth at exact price | O(1) |
+| Top-N snapshot | O(N log64 P) |
 
 ## Concurrency Boundary
 
@@ -48,6 +46,6 @@ Rejected alternatives:
 
 ## Observability
 
-The core exposes allocation-free counters in `Metrics`: submitted, accepted, rejected, canceled, replaced, trades, and capacity rejections. Parser failures, queue drops, and backpressure are `PipelineMetrics` concerns because they belong to replay/session orchestration rather than the book.
+The core exposes allocation-free counters in `Metrics`: submitted, accepted, rejected, canceled, replaced, trades, and capacity rejections. `submit` and `replace` retain result-owned `TradeList` APIs for convenience. Their `TradeSink` overloads instead return compact summaries and synchronously call a non-null `noexcept` callback for each trade; the callback must not re-enter the book. Parser failures, queue drops, and backpressure are `PipelineMetrics` concerns because they belong to replay/session orchestration rather than the book.
 
 The current implementation avoids hot-path logging. Detailed logs belong at component boundaries such as parser errors, replay failures, and artifact generation.

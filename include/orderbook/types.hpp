@@ -86,6 +86,11 @@ struct Trade {
     Sequence sequence{};
 };
 
+struct TradeSink {
+    void* context{};
+    void (*on_trade)(void*, const Trade&) noexcept{};
+};
+
 class TradeList {
 public:
     using Spill = std::vector<Trade>;
@@ -162,6 +167,13 @@ struct SubmitResult {
     TradeList trades;
 };
 
+struct SubmitSummary {
+    SubmitStatus status{SubmitStatus::Accepted};
+    Quantity accepted_quantity{};
+    Quantity resting_quantity{};
+    std::size_t trade_count{};
+};
+
 struct CancelResult {
     CancelStatus status{CancelStatus::UnknownOrder};
     Quantity canceled_quantity{};
@@ -171,6 +183,12 @@ struct ReplaceResult {
     ReplaceStatus status{ReplaceStatus::UnknownOrder};
     Quantity resting_quantity{};
     TradeList trades;
+};
+
+struct ReplaceSummary {
+    ReplaceStatus status{ReplaceStatus::UnknownOrder};
+    Quantity resting_quantity{};
+    std::size_t trade_count{};
 };
 
 struct Metrics {

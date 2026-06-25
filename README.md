@@ -31,10 +31,11 @@ Then open `http://127.0.0.1:8000` and connect to the default SSE URL.
 - Price-time priority matching with integer tick prices.
 - Limit, market, IOC, FOK, cancel, and cancel-replace flows.
 - FIFO queues per price level.
-- O(1) order lookup for cancels/replaces via `OrderId -> order index`.
-- O(1) best bid/ask access at sorted-vector edges.
+- Fixed-capacity, open-addressed `OrderId -> order index` lookup with no hot-path rehashes or node allocations.
+- Configured dense tick ladder with hierarchical occupancy bitmaps for bounded best-price discovery.
 - Preallocated order storage with free-list slot reuse and explicit capacity rejection.
 - Small-buffer trade results for common 0-4 fill paths.
+- Optional synchronous `TradeSink` API that emits trades without constructing a result-owned trade list.
 - Lock-free SPSC ring buffer with acquire/release memory-ordering comments.
 - Defensive JSONL parser, replay CLI, synthetic generator, doctest tests, parser corpus, and optional LibFuzzer target.
 
@@ -55,39 +56,38 @@ index-based FIFO level queues         static/SSE web visualizer
 
 The matching core is intentionally single-writer. Concurrency belongs around the core, not inside it, so replay is deterministic and invariant checks are straightforward. `SpscRing<T>` is provided for ingestion/publishing pipelines where one producer hands events to one consumer without a mutex.
 
-## Complexity
+## Configuration and Complexity
+
+Every book requires an explicit inclusive price band. The band is allocated at construction and never grows:
+
+```cpp
+OrderBook book({.min_price = 9'000, .max_price = 11'000, .max_orders = 1'000'000});
+```
+
+Limit prices outside that band are rejected as invalid; market-order prices are ignored. `submit(order, TradeSink)` and `replace(order, TradeSink)` return compact summaries and invoke a non-null `noexcept` callback for every trade. The callback must not re-enter the book.
 
 | Operation | Complexity | Note |
 | --- | ---: | --- |
-| Submit at existing resting level | O(log M) lookup + O(1) append | Binary-searches sorted levels, then appends to FIFO. |
-| Submit at new price level | O(log M) lookup + O(M) insert | `M` is active price levels; vector insertion shifts levels. |
+| Submit at any configured resting level | O(1) level access + O(1) append | No level insertion, erase, or binary search. |
 | Match best level | O(1) per maker fill | Removes from FIFO head. |
-| Cancel live order | O(1) | Hash lookup plus intrusive unlink. |
-| Replace live order | O(1) cancel + submit cost | Exchange-style cancel-replace loses time priority. |
-| Best bid / ask | O(1) | Sorted-vector edge access. |
-| Snapshot top N | O(N) | Walks best levels only. |
+| Cancel live order | Expected O(1) | Flat ID-index lookup plus intrusive unlink. |
+| Replace live order | Expected O(1) + submit cost | Exchange-style cancel-replace loses time priority. |
+| Best bid / ask | O(log64 P) | Bitmap hierarchy over `P` configured ticks. |
+| Snapshot top N | O(N log64 P) | Visits occupied levels only. |
 
 ## Local Benchmark Snapshot
 
 Command:
 
 ```bash
-./build/orderbook_bench --orders 100000 --seed 42
+./build/orderbook_bench --orders 100000 --seed 42 --runs 5 > candidate.jsonl
 ```
 
 Environment: macOS 26.5.1, Darwin arm64, AppleClang 21.0.0, Release build.
 
-Clock overhead calibration reported `0 ns` on this run, so raw and corrected percentiles are identical.
+The benchmark performs one warmup suite and reports median values across the requested runs. It includes `deep_wide_level_churn`, which repeatedly creates and empties dispersed levels in a 131,072-tick band. Compare same-machine, same-command artifacts with `python3 tools/check_bench.py baseline.jsonl candidate.jsonl`; the gate uses raw p99 because clock-overhead calibration can vary by a timer tick between runs.
 
-| Scenario | Throughput/sec | Batch ns/op | Corrected p50 ns | Corrected p99 ns | Corrected p99.9 ns |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| add_only | 18,034,401 | 55 | 42 | 84 | 875 |
-| mixed_add_cancel_replace | 14,426,023 | 69 | 42 | 125 | 167 |
-| aggressive_crossing | 31,124,374 | 32 | 0 | 42 | 42 |
-| snapshot_top10 | 16,826,773 | 59 | 41 | 42 | 125 |
-| spsc_ring_throughput | 10,058,295 | 99 | 42 | 250 | 292 |
-
-The sub-100 ns figures are close to local clock resolution; treat them as comparative local measurements, not portable latency guarantees. Every performance claim should be regenerated on the target machine.
+The sub-100 ns figures are close to local clock resolution; treat them as comparative local measurements, not portable latency guarantees.
 
 ## Repository Map
 

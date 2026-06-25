@@ -65,7 +65,9 @@ void write_trades(std::ostream* out, const TradeList& trades) {
 }
 
 int run_events(const std::vector<NewOrder>& orders, const Args& args) {
-    OrderBook book({.max_orders = std::max<std::size_t>(orders.size() + 1024, 4096)});
+    OrderBook book({.min_price = 1,
+                    .max_price = 20'000,
+                    .max_orders = std::max<std::size_t>(orders.size() + 1024, 4096)});
     std::ofstream snapshot_file;
     std::ofstream trade_file;
     if (!args.snapshots.empty()) snapshot_file.open(args.snapshots);
@@ -108,7 +110,7 @@ int run_replay(const Args& args) {
     if (!args.snapshots.empty()) snapshot_file.open(args.snapshots);
     if (!args.trades.empty()) trade_file.open(args.trades);
 
-    OrderBook book;
+    OrderBook book({.min_price = 1, .max_price = 1'000'000, .max_orders = 1'000'000});
     std::string line;
     std::size_t line_no = 0;
     while (std::getline(input, line)) {
